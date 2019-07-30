@@ -6,6 +6,20 @@ import re
 from functools import reduce
 from copy import deepcopy
 
+# Lexographic comparison. From stack overflow 4623446
+def tryint(s):
+    try:
+        return int(s)
+    except:
+        return s
+
+def alphanum_key(s):
+    """ Turn a string into a list of string and number chunks.
+        "z23a" -> ["z", 23, "a"]
+    """
+    return [ tryint(c) for c in re.split('([0-9]+)', s) ]
+
+
 def file_to_list_of_dicts(fname):
     with open(fname) as in_f:
         lines = list(in_f)
@@ -58,6 +72,55 @@ def filter_to_new_list(lst, key, regex):
     for itm in new_lst:
         lst.remove(itm)
     return new_lst
+
+
+# This is the sort function for sorting pins within a bank
+# As a baseline we do an lexographic sort (i.e. human/filename sort)
+# One level above this we give one more sorting value based upon our own heuristic of what looks good
+# We also ensure to sort by bytelane (if present)
+def bank_sort_key(pin):
+    name = pin["Pin Name"]
+
+    key = alphanum_key(name)
+
+    # Keep all the pins in a bytelane together
+    assert False, "Implement this"
+    assert False, "Also need to keep MGTs together"
+
+    if re.match("VCCO", name): # It's convenient to have VCCO at the top because it connects to power pins
+        extra = 0
+    elif re.match("VREF", name): # Likewise 
+        extra = 1
+    elif re.match("MGTREFCLK", name): # Put MGT refclks above the MGTs themselves
+        extra = 2
+    else:
+        extra = 3
+        
+    key.insert(0,extra)
+    return key
+
+# N is before P in the alphabet, meaning our lexographic sort puts all the complement pins before the true
+# We solve this by iterating through pairs of pins, and if the only differences between the two are N and P being swapped
+def swap_ps_and_ns(bank):
+    for i in range(0,len(bank)-1):
+        namea = bank[i]["Pin Name"]
+        nameb = bank[i+1]["Pin Name"]
+        # Very small performance improvement :)
+        if namea == nameb:
+            continue
+        # Zip truncates names if different lengths
+        if len(namea) != len(nameb):
+            continue
+
+        u = zip(namea, nameb)
+        # If we find any difference that isn't a simple p/n swap, mark the candidate as bad
+        okay = True
+        for l, m in u:
+            if l != m and not((l in ['P', 'N']) and (m in ['P', 'N'])):
+                okay = False
+                break
+        if okay:
+            print("Swapping %s and %s (%s,%s)" %(namea, nameb, l, m))
 
 if len(sys.argv) != 2:
     print("Usage: %s [filename]" %(sys.argv[0]))
@@ -151,9 +214,20 @@ banks["504/PSDDR_VCCO"] = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"V
 print_bank_summary(banks)
 print("")
 
+# At this point the pins are still in the order that Xilinx gave us
+# This ordering isn't great
+# Sort the pins into a sensible order
+# See the definition of bank_sort_key for the heavy lifting
+# The only patchup is swapping P and N
 
-
-
+for key, bank in banks.items():
+    bank.sort(key=bank_sort_key)
+    swap_ps_and_ns(bank)
 
 for pin in banks["64/HP"]:
-    print(pin)
+    print(pin["Pin Name"])
+
+print('')
+
+for pin in banks["224/GTH"]:
+    print(pin["Pin Name"])

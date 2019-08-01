@@ -76,22 +76,32 @@ def filter_to_new_list(lst, key, regex):
 
 # This is the sort function for sorting pins within a bank
 # As a baseline we do an lexographic sort (i.e. human/filename sort)
-# One level above this we give one more sorting value based upon our own heuristic of what looks good
-# We also ensure to sort by bytelane (if present)
+    # Before this however we lexographic sort without Ps and Ns in place. This is hacky but ensures that diff pairs will be grouped togther
+    # We need to do this because Xilinx doesn't always put them in sensible places in the name
+    # One level above this we give one more sorting value based upon our own heuristic of what looks good
 def bank_sort_key(pin):
     name = pin["Pin Name"]
 
-    key = alphanum_key(name)
+    # Include the pin number in case the name is identical
+    key = alphanum_key(name) + alphanum_key(pin["Pin"])
 
-    # Keep all the pins in a bytelane together
-    assert False, "Implement this"
-    assert False, "Also need to keep MGTs together"
+    name_no_p_n = re.sub(r'[PN]', '', name)
+    if name_no_p_n != name:
+        key = alphanum_key(name_no_p_n) + key
+
+    name_no_mgt = re.sub(r'MGT([HR])*((RX)|(TX))([PN])([0-3])',r'\6\4',name) # Rearrange MGT pins to group in lanes
+    if name_no_mgt != name:
+        key = alphanum_key(name_no_mgt) + key
+    #    print(name)
+    #    print(name_no_mgt)
+
+    
 
     if re.match("VCCO", name): # It's convenient to have VCCO at the top because it connects to power pins
         extra = 0
     elif re.match("VREF", name): # Likewise 
         extra = 1
-    elif re.match("MGTREFCLK", name): # Put MGT refclks above the MGTs themselves
+    elif re.match(".*MGTREFCLK", name): # Put MGT refclks above the MGTs themselves
         extra = 2
     else:
         extra = 3
@@ -100,7 +110,7 @@ def bank_sort_key(pin):
     return key
 
 # N is before P in the alphabet, meaning our lexographic sort puts all the complement pins before the true
-# We solve this by iterating through pairs of pins, and if the only differences between the two are N and P being swapped
+# We solve this by iterating through pairs of pins, and swap if the only differences between the two are N and P 
 def swap_ps_and_ns(bank):
     for i in range(0,len(bank)-1):
         namea = bank[i]["Pin Name"]
@@ -120,7 +130,8 @@ def swap_ps_and_ns(bank):
                 okay = False
                 break
         if okay:
-            print("Swapping %s and %s (%s,%s)" %(namea, nameb, l, m))
+            #print("Swapping %s and %s (%s,%s)" %(namea, nameb, l, m))
+            bank[i], bank[i+1] = bank[i+1], bank[i]
 
 if len(sys.argv) != 2:
     print("Usage: %s [filename]" %(sys.argv[0]))
@@ -181,21 +192,21 @@ print("")
 # Split this bank up into other banks
 
 # First take out all the ground pins
-banks["GND"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"GND")
+banks["NA/GND"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"GND")
 
 
 # Then take out all the VCCINT pins
-banks["VCCINT"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"VCCINT")
+banks["NA/VCCINT"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"VCCINT")
 
 
 # Then take out all the PS Power pins
-banks["PSVCC"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"(VCC_PS)|(PS_(.*)V)")
+banks["NA/PSVCC"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"(VCC_PS)|(PS_(.*)V)")
 
 # Then the PL MGT Power Pins
-banks["PLMGTV"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"MGT(A)*V")
+banks["NA/PLMGTV"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"MGT(A)*V")
 
 # Then any other power pins
-banks["OTHERVCC"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"VCC")
+banks["NA/OTHERVCC"] = filter_to_new_list(banks["NA/NA"], "Pin Name", r"VCC")
 
 print("Banks after splitting up NA/NA")
 print_bank_summary(banks)
@@ -204,7 +215,7 @@ print("")
 # The PS DDR Bank is massive too
 # Split it up in groups
 
-banks["504/PSDDR_ADDR"] = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"PS_DDR_A")
+banks["504/PSDDR_ADDR"] = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"PS_DDR_A[0-17]")
 banks["504/PSDDR_DQS"]  = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"PS_DDR_DQS")
 banks["504/PSDDR_DQ"]   = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"PS_DDR_DQ")
 banks["504/PSDDR_DM"]   = filter_to_new_list(banks["504/PSDDR"], "Pin Name", r"PS_DDR_DM")
@@ -229,5 +240,62 @@ for pin in banks["64/HP"]:
 
 print('')
 
+for pin in banks["48/HD"]:
+    print(pin["Pin Name"])
+
+print('')
+
 for pin in banks["224/GTH"]:
     print(pin["Pin Name"])
+
+print('')
+
+for pin in banks["505/PSGTR"]:
+    print(pin["Pin Name"])
+
+
+print(banks["505/PSGTR"][0])
+
+with open('orcadpins.csv', 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(['Number', 'Name', 'Type', 'Pin Visibility', 'Shape', 'PinGroup', 'Position', 'Section'])
+    section = ord('A')
+
+    # Sort the banks so that our blocks are in a sensible order
+    keylist = sorted(banks.keys(), key=alphanum_key)
+
+    print(keylist)
+    
+    for key in keylist:
+        bank = banks[key]
+        pin_idx = 0
+        # Split ground pins along left and right, others are left only
+        if re.match(r".*(GND)", bank[0]["Pin Name"]):
+            right_idx = len(bank)/2
+        else:
+            right_idx = len(bank) + 1
+        
+        for pin in bank:
+            if re.match(r".*((VCC)|(VTT)|(GND)|(VREF)|(VCCO)|(VREF))", pin["Pin Name"]):
+                pintype = "Power"
+            elif re.match(r".*((REFCLK)|(PUDC_B)|(RX))", pin["Pin Name"]):
+                pintype = "Input"
+            elif re.match(r".*((TX))", pin["Pin Name"]):
+                pintype = "Output"
+            else:
+                pintype = "Bidirectional"
+            
+            if pin_idx > right_idx:
+                position = "Right"
+            else:
+                position = "Left"
+
+            if section > ord('Z'):
+                section_str = "A" + chr(section - ord('Z') + ord('A') -1 )
+            else:
+                section_str =  str(chr(section))
+            
+            writer.writerow([pin["Pin"], pin["Pin Name"], pintype, "1", "Line", "", position, section_str ])
+            pin_idx = pin_idx + 1
+        section = section + 1
+    
